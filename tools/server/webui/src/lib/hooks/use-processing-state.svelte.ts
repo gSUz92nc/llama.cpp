@@ -118,12 +118,33 @@ export function useProcessingState(): UseProcessingStateReturn {
 		const currentConfig = config(); // Get fresh config each time
 
 		// Always show context info when we have valid data
-		if (stateToUse.contextUsed >= 0 && stateToUse.contextTotal > 0) {
-			const contextPercent = Math.round((stateToUse.contextUsed / stateToUse.contextTotal) * 100);
+		if (stateToUse.contextTotal > 0) {
+			
+			console.log("Current status:", stateToUse.status)
+			
+			const contextTokens =
+				stateToUse.status === 'preparing' ? stateToUse.promptTotalTokens : stateToUse.contextUsed;
 
-			details.push(
-				`Context: ${stateToUse.contextUsed}/${stateToUse.contextTotal} (${contextPercent}%)`
-			);
+			if (contextTokens >= 0) {
+				const contextPercent = Math.round((contextTokens / stateToUse.contextTotal) * 100);
+				details.push(`Context: ${contextTokens}/${stateToUse.contextTotal} (${contextPercent}%)`);
+			}
+		}
+
+		// Show prompt processing progress when preparing
+		if (stateToUse.status === 'preparing' && stateToUse.progressPercent !== undefined) {
+			const promptTotalTokens = stateToUse.promptTotalTokens || 0;
+			const processed = stateToUse.promptProcessedTokens || 0;
+
+			details.push(`Input: ${processed}/${promptTotalTokens} (${stateToUse.progressPercent}%)`);
+
+			if (
+				currentConfig.showTokensPerSecond &&
+				stateToUse.promptTokensPerSecond &&
+				stateToUse.promptTokensPerSecond > 0
+			) {
+				details.push(`${stateToUse.promptTokensPerSecond.toFixed(1)} tokens/sec (prompt)`);
+			}
 		}
 
 		if (stateToUse.outputTokensUsed > 0) {

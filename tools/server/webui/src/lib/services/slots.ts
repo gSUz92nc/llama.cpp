@@ -252,6 +252,17 @@ export class SlotsService {
 			? Math.round((promptProgress.processed / promptProgress.total) * 100)
 			: undefined;
 
+		const promptTotalTokens = promptProgress?.total ?? 0;
+		const promptCacheTokens = promptProgress?.cache ?? 0;
+		const promptProcessedTokens = promptProgress?.processed ?? 0;
+		const promptProcessingTimeMs = promptProgress?.time_ms ?? 0;
+
+		const promptProcessedNonCached = Math.max(0, promptProcessedTokens - promptCacheTokens);
+		const promptTokensPerSecond =
+			promptProcessedNonCached > 0 && promptProcessingTimeMs > 0
+				? (promptProcessedNonCached / promptProcessingTimeMs) * 1000
+				: undefined;
+
 		return {
 			status: predictedTokens > 0 ? 'generating' : promptProgress ? 'preparing' : 'idle',
 			tokensDecoded: predictedTokens,
@@ -267,7 +278,11 @@ export class SlotsService {
 			speculative: false,
 			progressPercent,
 			promptTokens,
-			cacheTokens
+			cacheTokens,
+			promptTotalTokens,
+			promptProcessedTokens,
+			promptProcessingTimeMs,
+			promptTokensPerSecond
 		};
 	}
 

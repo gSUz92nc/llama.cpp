@@ -119,7 +119,8 @@ export class ChatService {
 				role: msg.role,
 				content: msg.content
 			})),
-			stream
+			stream,
+			return_progress: true
 		};
 
 		const modelSelectorEnabled = Boolean(currentConfig.modelSelectorEnabled);
@@ -334,7 +335,7 @@ export class ChatService {
 								onModel?.(chunkModel);
 							}
 
-							if (timings || promptProgress) {
+							if ((timings || promptProgress) && !abortSignal?.aborted) {
 								this.updateProcessingState(timings, promptProgress, conversationId);
 								if (timings) {
 									lastTimings = timings;
