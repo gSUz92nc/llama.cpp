@@ -1,0 +1,9 @@
+The first SSE from the server shows 
+
+Context: 3439/131072 (3%)
+Output: 135/∞
+17.9 tokens/sec
+
+on the front end
+
+Happens when the request to /slots resolves after the SSE event

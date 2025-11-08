@@ -117,22 +117,27 @@ export function useProcessingState(): UseProcessingStateReturn {
 		const details: string[] = [];
 		const currentConfig = config(); // Get fresh config each time
 
-		// Always show context info when we have valid data
+		// Show context info
 		if (stateToUse.contextTotal > 0) {
-			
-			console.log("Current status:", stateToUse.status)
-			
-			const contextTokens =
-				stateToUse.status === 'preparing' ? stateToUse.promptTotalTokens : stateToUse.contextUsed;
+			const isPreparing = stateToUse.status === 'preparing';
+			const shouldShow = !isPreparing || currentConfig.showPromptProcessingStats;
 
-			if (contextTokens >= 0) {
-				const contextPercent = Math.round((contextTokens / stateToUse.contextTotal) * 100);
-				details.push(`Context: ${contextTokens}/${stateToUse.contextTotal} (${contextPercent}%)`);
+			if (shouldShow) {
+				const contextTokens = isPreparing ? stateToUse.promptTotalTokens : stateToUse.contextUsed;
+
+				if (contextTokens >= 0) {
+					const contextPercent = Math.round((contextTokens / stateToUse.contextTotal) * 100);
+					details.push(`Context: ${contextTokens}/${stateToUse.contextTotal} (${contextPercent}%)`);
+				}
 			}
 		}
 
 		// Show prompt processing progress when preparing
-		if (stateToUse.status === 'preparing' && stateToUse.progressPercent !== undefined) {
+		if (
+			currentConfig.showPromptProcessingStats &&
+			stateToUse.status === 'preparing' &&
+			stateToUse.progressPercent !== undefined
+		) {
 			const promptTotalTokens = stateToUse.promptTotalTokens || 0;
 			const processed = stateToUse.promptProcessedTokens || 0;
 

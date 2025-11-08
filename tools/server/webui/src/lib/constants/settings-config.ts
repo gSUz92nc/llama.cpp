@@ -9,6 +9,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	disableReasoningFormat: false,
 	keepStatsVisible: false,
 	showMessageStats: true,
+	showPromptProcessingStats: false,
 	askForTitleConfirmation: false,
 	pasteLongTextToFileLen: 2500,
 	pdfAsImage: false,
@@ -85,6 +86,8 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 	keepStatsVisible: 'Keep processing statistics visible after generation finishes.',
 	showMessageStats:
 		'Display generation statistics (tokens/second, token count, duration) below each assistant message.',
+	showPromptProcessingStats:
+		'Display prompt processing progress and speed (Only updates after a batch is finished processing)',
 	askForTitleConfirmation:
 		'Ask for confirmation before automatically changing conversation title when editing the first message.',
 	pdfAsImage: 'Parse PDF as image instead of text (requires vision-capable model).',

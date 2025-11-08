@@ -63,6 +63,11 @@
 					type: 'checkbox'
 				},
 				{
+					key: 'showPromptProcessingStats',
+					label: 'Show prompt processing stats',
+					type: 'checkbox'
+				},
+				{
 					key: 'keepStatsVisible',
 					label: 'Keep stats visible after generation',
 					type: 'checkbox'
