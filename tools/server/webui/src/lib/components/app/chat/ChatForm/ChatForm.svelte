@@ -123,6 +123,23 @@
 	function handlePaste(event: ClipboardEvent) {
 		if (!event.clipboardData) return;
 
+		// Check for text content first to prioritize text over images
+		// (e.g., when copying from spreadsheets that provide both formats)
+		const text = event.clipboardData.getData(MimeTypeText.PLAIN);
+
+		if (text.length > 0) {
+			if (pasteLongTextToFileLength > 0 && text.length > pasteLongTextToFileLength) {
+				event.preventDefault();
+				const textFile = new File([text], 'Pasted', {
+					type: MimeTypeText.PLAIN
+				});
+
+				onFileUpload?.([textFile]);
+			}
+
+			return;
+		}
+
 		const files = Array.from(event.clipboardData.items)
 			.filter((item) => item.kind === 'file')
 			.map((item) => item.getAsFile())
@@ -131,24 +148,8 @@
 		if (files.length > 0) {
 			event.preventDefault();
 			onFileUpload?.(files);
-			return;
 		}
 
-		const text = event.clipboardData.getData(MimeTypeText.PLAIN);
-
-		if (
-			text.length > 0 &&
-			pasteLongTextToFileLength > 0 &&
-			text.length > pasteLongTextToFileLength
-		) {
-			event.preventDefault();
-
-			const textFile = new File([text], 'Pasted', {
-				type: MimeTypeText.PLAIN
-			});
-
-			onFileUpload?.([textFile]);
-		}
 	}
 
 	async function handleMicClick() {
