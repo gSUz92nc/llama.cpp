@@ -1,0 +1,14 @@
+This file documents the manual diff required for llama-model.h.
+Apply with: patch -p1 < src/llama-model.h.patch
+
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -# ff section in struct llama_layer @@
+     // ff
+     struct ggml_tensor * ffn_gate     = nullptr; // w1
+     struct ggml_tensor * ffn_down     = nullptr; // w2
++    // SVD-quant: low-rank factor pair replacing ffn_down
++    // When both are non-null, inference uses xAB instead of xW
++    struct ggml_tensor * ffn_down_factor_a = nullptr; // U_k * Sigma_k  [rows x rank]
++    struct ggml_tensor * ffn_down_factor_b = nullptr; // V_k^T * s^-1   [rank x cols]
+     struct ggml_tensor * ffn_up       = nullptr; // w3
