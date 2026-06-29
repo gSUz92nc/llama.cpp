@@ -286,12 +286,14 @@ struct llama_layer {
     struct ggml_tensor * ffn_norm_enc     = nullptr;
 
     // ff
-    struct ggml_tensor * ffn_gate     = nullptr; // w1
-    struct ggml_tensor * ffn_down     = nullptr; // w2
-    struct ggml_tensor * ffn_up       = nullptr; // w3
-    struct ggml_tensor * ffn_gate_enc = nullptr;
-    struct ggml_tensor * ffn_down_enc = nullptr;
-    struct ggml_tensor * ffn_up_enc   = nullptr;
+    struct ggml_tensor * ffn_gate          = nullptr; // w1
+    struct ggml_tensor * ffn_down          = nullptr; // w2
+    struct ggml_tensor * ffn_down_factor_a = nullptr;
+    struct ggml_tensor * ffn_down_factor_b = nullptr;
+    struct ggml_tensor * ffn_up            = nullptr; // w3
+    struct ggml_tensor * ffn_gate_enc      = nullptr;
+    struct ggml_tensor * ffn_down_enc      = nullptr;
+    struct ggml_tensor * ffn_up_enc        = nullptr;
 
     // ff MoE
     struct ggml_tensor * ffn_gate_inp      = nullptr;

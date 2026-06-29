@@ -1,5 +1,7 @@
+#include "ggml.h"
 #include "models.h"
 #include "llama-memory-recurrent.h"
+#include <cstdint>
 
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
@@ -89,7 +91,22 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         }
 
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
-        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
+
+        auto factor_a_name{tn(LLM_TENSOR_FFN_DOWN, "factor_a", il)};
+        auto factor_b_name{tn(LLM_TENSOR_FFN_DOWN, "factor_b", il)};
+
+        ggml_tensor *factor_a{ml.get_tensor_meta(factor_a_name.str().c_str())};
+        ggml_tensor *factor_b{ml.get_tensor_meta(factor_b_name.str().c_str())};
+
+        const int64_t reduced_dim{factor_a->ne[0]};
+
+        if (factor_a && factor_b) {
+            layer.ffn_down_factor_a = create_tensor(factor_a_name, { reduced_dim, n_embd }, flags);
+            layer.ffn_down_factor_b = create_tensor(factor_b_name, { n_ff, reduced_dim }, flags);
+        } else {
+            layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
+        }
+
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
     };
 
@@ -478,7 +495,8 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, cons
         model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
         model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
         NULL,
-        LLM_FFN_SILU, LLM_FFN_PAR, il);
+        LLM_FFN_SILU, LLM_FFN_PAR, il,
+        model.layers[il].ffn_down_factor_a, model.layers[il].ffn_down_factor_b);
     cb(cur, "ffn_out", il);
 
     return cur;
