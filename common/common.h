@@ -593,7 +593,7 @@ struct common_params {
     struct common_params_model mmproj;
     bool mmproj_use_gpu = true;     // use GPU for multimodal model
     bool no_mmproj = false;         // explicitly disable multimodal model
-    std::vector<std::string> image; // path to image file(s) ; TODO: change the name to "media"
+    std::vector<std::string> media; // path to media file(s)
     int image_min_tokens = -1;
     int image_max_tokens = -1;
     int mtmd_batch_max_tokens = 1024;

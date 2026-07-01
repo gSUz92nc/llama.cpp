@@ -104,7 +104,7 @@ int main(int argc, char ** argv) {
 
     std::string input;
     int32_t inp_size = params.n_predict;
-    if (params.image.empty()) {
+    if (params.media.empty()) {
         LOG_ERR("ERR: At least one of --image or --audio must be specified\n");
         return 1;
     }
@@ -112,7 +112,7 @@ int main(int argc, char ** argv) {
         LOG_ERR("ERR: Invalid size specified with -n, must be greater than 0\n");
         return 1;
     }
-    input = params.image[0];
+    input = params.media[0];
 
     if (params.prompt.empty() || params.prompt == "encode") {
         std::vector<std::vector<float>> image;

@@ -392,7 +392,7 @@ int main(int argc, char ** argv) {
     mtmd_cli_context ctx(params);
     LOG_INF("%s: loading model: %s\n", __func__, params.model.path.c_str());
 
-    bool is_single_turn = !params.prompt.empty() && !params.image.empty();
+    bool is_single_turn = !params.prompt.empty() && !params.media.empty();
 
     int n_predict = params.n_predict < 0 ? INT_MAX : params.n_predict;
 
@@ -438,7 +438,7 @@ int main(int argc, char ** argv) {
     if (is_single_turn) {
         g_is_generating = true;
         if (params.prompt.find(mtmd_default_marker()) == std::string::npos) {
-            for (size_t i = 0; i < params.image.size(); i++) {
+            for (size_t i = 0; i < params.media.size(); i++) {
                 // most models require the marker before each image
                 // ref: https://github.com/ggml-org/llama.cpp/pull/17616
                 params.prompt = mtmd_default_marker() + params.prompt;
@@ -448,7 +448,7 @@ int main(int argc, char ** argv) {
         common_chat_msg msg;
         msg.role = "user";
         msg.content = params.prompt;
-        for (const auto & image : params.image) {
+        for (const auto & image : params.media) {
             if (!ctx.load_media(image)) {
                 return 1; // error is already printed by libmtmd
             }

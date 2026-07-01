@@ -2347,7 +2347,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "path to an image, audio, or video file. use with multimodal models, use comma-separated values for multiple files\n",
         [](common_params & params, const std::string & value) {
             for (const auto & item : parse_csv_row(value)) {
-                params.image.emplace_back(item);
+                params.media.emplace_back(item);
             }
         }
     ).set_examples({LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_CLI}));

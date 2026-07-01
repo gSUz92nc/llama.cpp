@@ -506,7 +506,7 @@ int llama_cli(int argc, char ** argv) {
             } while (another_line);
         } else {
             // process input prompt from args
-            for (auto & fname : params.image) {
+            for (auto & fname : params.media) {
                 std::string marker = ctx_cli.load_input_file(fname, true);
                 if (marker.empty()) {
                     console::error("file does not exist or cannot be opened: '%s'\n", fname.c_str());
