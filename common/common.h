@@ -120,8 +120,9 @@ enum common_sampler_type {
     COMMON_SAMPLER_TYPE_XTC         = 8,
     COMMON_SAMPLER_TYPE_INFILL      = 9,
     COMMON_SAMPLER_TYPE_PENALTIES   = 10,
-    COMMON_SAMPLER_TYPE_TOP_N_SIGMA = 11,
-    COMMON_SAMPLER_TYPE_ADAPTIVE_P  = 12,
+    COMMON_SAMPLER_TYPE_TOP_N_SIGMA     = 11,
+    COMMON_SAMPLER_TYPE_ADAPTIVE_P      = 12,
+    COMMON_SAMPLER_TYPE_FUTURE_ENTROPY  = 13,
 };
 
 // dimensionality reduction methods, used by cvector-generator
@@ -241,6 +242,10 @@ struct common_params_sampling {
     int32_t dry_penalty_last_n = -1;     // how many tokens to scan for repetitions (0 = disable penalty, -1 = context size)
     float   adaptive_target    = -1.0f;  // select tokens near this probability (valid range 0.0 to 1.0; negative = disabled)
     float   adaptive_decay     = 0.90f;  // EMA decay for adaptation; history ≈ 1/(1-decay) tokens (0.0 - 0.99)
+    float   fe_alpha           = 0.00f;  // future-entropy alpha crossfader [-1, 1]; 0 = geometric mean
+    int32_t fe_top_candidates  = 50;     // number of candidate tokens for future-entropy evaluation
+    int32_t fe_future_top      = 40;     // top-n tokens for future-entropy computation
+    int32_t fe_rhythmic_period = 0;      // rhythmic mode period in tokens (0 = off)
     int32_t mirostat           = 0;      // 0 = disabled, 1 = mirostat, 2 = mirostat 2.0
     float   top_n_sigma        = -1.00f; // -1.0 = disabled
     float   mirostat_tau       = 5.00f;  // target entropy

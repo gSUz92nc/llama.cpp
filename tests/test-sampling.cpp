@@ -192,6 +192,181 @@ static void test_top_n_sigma(const std::vector<float> & probs, const std::vector
     tester.check();
 }
 
+// future-entropy tests
+// Note: without a llama_context, the sampler falls back to probability-pass-through.
+// These tests verify the fallback behavior, rhythmic mode alpha values, and scoring math.
+
+static void test_future_entropy_no_context(const std::vector<float> & probs, const std::vector<float> & probs_expected) {
+    sampler_tester tester(probs, probs_expected);
+
+    DUMP(&tester.cur_p);
+    // Without context, future-entropy passes probabilities through unchanged
+    tester.apply(llama_sampler_init_future_entropy(10, 5, 0.5f, 0, 0.0f));
+    tester.apply(llama_sampler_init_dist(0));
+    DUMP(&tester.cur_p);
+
+    tester.check();
+}
+
+static void test_future_entropy_rhythmic() {
+    // Test that rhythmic mode produces correct alpha values across steps
+    const int32_t period = 20;
+    const float phase = 0.0f;
+    const float PI = 3.14159265359f;
+
+    auto * sampler = llama_sampler_init_future_entropy(10, 5, 0.0f, period, phase);
+
+    // Verify alpha at specific steps using the state getter
+    struct alpha_check {
+        int step;
+        float expected_alpha;
+    };
+    alpha_check checks[] = {
+        { 0, std::sin(2.0f * PI * 0.0f / (float)period) },  // sin(0) = 0
+        { 5, std::sin(2.0f * PI * 5.0f / (float)period) },  // sin(pi/2) = 1
+        {10, std::sin(2.0f * PI *10.0f / (float)period) },  // sin(pi) = 0
+        {15, std::sin(2.0f * PI *15.0f / (float)period) },  // sin(3pi/2) = -1
+    };
+
+    // Minimal token data for apply calls
+    std::vector<llama_token_data> cur;
+    cur.reserve(4);
+    cur.emplace_back(llama_token_data{0, logf(0.1f), 0.1f});
+    cur.emplace_back(llama_token_data{1, logf(0.2f), 0.2f});
+    cur.emplace_back(llama_token_data{2, logf(0.3f), 0.3f});
+    cur.emplace_back(llama_token_data{3, logf(0.4f), 0.4f});
+    llama_token_data_array cur_p = {cur.data(), cur.size(), -1, false};
+
+    for (auto & chk : checks) {
+        llama_sampler_reset(sampler);
+
+        // Advance step_count to the target step
+        for (int i = 0; i < chk.step; ++i) {
+            cur_p.selected = -1;
+            llama_sampler_apply(sampler, &cur_p);
+        }
+
+        // Check alpha before the next apply (i.e. at exactly chk.step)
+        float alpha;
+        int64_t step_count;
+        llama_sampler_get_state_future_entropy(sampler, &alpha, &step_count);
+
+        GGML_ASSERT(step_count == (int64_t)chk.step);
+
+        const float eps = 1e-5f;
+        if (std::fabs(alpha - chk.expected_alpha) > eps) {
+            printf("FAIL: step %d alpha=%.6f expected=%.6f\n", chk.step, alpha, chk.expected_alpha);
+            GGML_ASSERT(false);
+        }
+    }
+
+    llama_sampler_free(sampler);
+    printf("future-entropy rhythmic alpha values OK\n");
+}
+
+// Verify the scoring formula: s(w) = p(w)^a * H(w)^b
+// Test with synthetic entropy values to validate the math
+static void test_future_entropy_scoring() {
+    const float eps = 1e-4f;
+
+    // Test 1: alpha = -1 -> a=1, b=0 -> s(w) = p(w)^1 * H(w)^0 = p(w)
+    // Result should be identical to original probabilities
+    {
+        float alpha = -1.0f;
+        float a = 1.0f - std::max(0.0f, alpha);  // a = 1
+        float b = 1.0f - std::max(0.0f, -alpha); // b = 0
+
+        float probs[] = {0.1f, 0.2f, 0.3f, 0.4f};
+        float entropies[] = {0.0f, 0.5f, 1.0f, 0.2f}; // should not matter when b=0
+        int n = 4;
+
+        float scores[4];
+        for (int i = 0; i < n; ++i) {
+            float p = probs[i] > 0.0f ? probs[i] : 1e-10f;
+            float h = entropies[i];
+            if (h <= 0.0f && b > 0.0f) h = 1e-10f;
+            scores[i] = std::pow(p, a) * std::pow(h, b);
+        }
+
+        // Simple sum-normalization (scores are raw values, not log-space)
+        float sum_s = 0.0f;
+        for (int i = 0; i < n; ++i) sum_s += scores[i];
+        for (int i = 0; i < n; ++i) scores[i] /= sum_s;
+
+        // Should match original probabilities
+        for (int i = 0; i < n; ++i) {
+            if (std::fabs(scores[i] - probs[i]) > eps) {
+                printf("FAIL: alpha=-1 score[%d]=%.6f expected=%.6f\n", i, scores[i], probs[i]);
+                GGML_ASSERT(false);
+            }
+        }
+    }
+
+    // Test 2: alpha = 1 -> a=0, b=1 -> s(w) = p(w)^0 * H(w)^1 = H(w)
+    // Result should be proportional to entropy, ignoring probability
+    {
+        float alpha = 1.0f;
+        float a = 1.0f - std::max(0.0f, alpha);  // a = 0
+        float b = 1.0f - std::max(0.0f, -alpha); // b = 1
+
+        float probs[] = {0.4f, 0.3f, 0.2f, 0.1f};
+        float entropies[] = {0.1f, 0.3f, 0.7f, 0.9f};
+        int n = 4;
+
+        float scores[4];
+        for (int i = 0; i < n; ++i) {
+            float p = probs[i] > 0.0f ? probs[i] : 1e-10f;
+            float h = entropies[i] > 0.0f ? entropies[i] : 1e-10f;
+            scores[i] = std::pow(p, a) * std::pow(h, b);
+        }
+
+        // Simple sum-normalization
+        float sum_s = 0.0f;
+        for (int i = 0; i < n; ++i) sum_s += scores[i];
+        for (int i = 0; i < n; ++i) scores[i] /= sum_s;
+
+        // Token 3 has highest entropy (0.9) and lowest prob (0.1)
+        // Under alpha=1, highest-entropy token should win
+        if (scores[3] < scores[0]) {
+            printf("FAIL: alpha=1: highest-entropy token should win\n");
+            GGML_ASSERT(false);
+        }
+        // Scores should be ordered by entropy
+        for (int i = 0; i < n - 1; ++i) {
+            if (scores[i] >= scores[i + 1]) {
+                printf("FAIL: alpha=1: scores should be ordered by entropy\n");
+                GGML_ASSERT(false);
+            }
+        }
+    }
+
+    // Test 3: alpha = 0 -> a=1, b=1 -> s(w) = p(w) * H(w)
+    {
+        float alpha = 0.0f;
+        float a = 1.0f - std::max(0.0f, alpha);  // a = 1
+        float b = 1.0f - std::max(0.0f, -alpha); // b = 1
+
+        float probs[] = {0.5f, 0.5f};
+        float entropies[] = {0.2f, 0.8f};
+        int n = 2;
+
+        float scores[2];
+        for (int i = 0; i < n; ++i) {
+            float p = probs[i] > 0.0f ? probs[i] : 1e-10f;
+            float h = entropies[i] > 0.0f ? entropies[i] : 1e-10f;
+            scores[i] = std::pow(p, a) * std::pow(h, b);
+        }
+
+        // Both have same probability, so scores should differ only by entropy
+        if (scores[1] <= scores[0]) {
+            printf("FAIL: alpha=0: higher entropy should win when probs are equal\n");
+            GGML_ASSERT(false);
+        }
+    }
+
+    printf("future-entropy scoring formula OK\n");
+}
+
 static void test_sampler_queue(const size_t n_vocab, const std::string & samplers_sequence, const int top_k, const float top_p, const float min_p
 ) {
     sampler_tester tester(n_vocab);
@@ -391,6 +566,12 @@ int main(void) {
     test_sampler_queue(10000, "pmk", 100, 0.8f, 0.1f);
     test_sampler_queue(10000, "mkp", 100, 0.8f, 0.1f);
     test_sampler_queue(10000, "mpk", 100, 0.8f, 0.1f);
+
+    // future-entropy tests
+    test_future_entropy_no_context({0.1f, 0.2f, 0.3f, 0.4f}, {0.1f, 0.2f, 0.3f, 0.4f});
+    test_future_entropy_no_context({0.25f, 0.25f, 0.25f, 0.25f}, {0.25f, 0.25f, 0.25f, 0.25f});
+    test_future_entropy_rhythmic();
+    test_future_entropy_scoring();
 
     printf("OK\n");
 

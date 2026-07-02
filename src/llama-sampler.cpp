@@ -3818,11 +3818,318 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
             /* .buf1  = */ std::vector<char>(512),
         }
     );
-}
+    }
 
-// utils
+    // future-entropy
 
-uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
+    // future-entropy sampler: for each candidate token, look ahead one step to
+    // compute the entropy of the next-token distribution, then blend this entropy
+    // score with the token's own probability using an alpha crossfader.
+    //
+    // This sampler requires a llama_context to perform forward passes. Set it using
+    // llama_sampler_set_ctx_future_entropy() before use.
+    //
+    // The sampler must be placed after top-k/top-p in the chain (to limit the
+    // candidate set) and before temperature (so the output logits can be scaled).
+    //
+    // Performance note: each apply() performs one forward pass per candidate token.
+    // With 50 candidates this is ~50x the normal decode cost per token.
+    // Ensure n_seq_max >= 2 in llama_context_params (one base seq + one fork slot).
+
+    struct llama_sampler_future_entropy {
+        const int32_t  n_top_candidates;  // number of candidates to evaluate
+        const int32_t  n_future_top;      // top-n for entropy computation
+        const float    alpha_init;        // initial alpha crossfader [-1, 1]
+        const int32_t  rhythmic_period;   // period in tokens (0 = off)
+        const float    phase;             // phase offset for rhythmic mode
+
+        mutable int64_t step_count;       // generation step counter for rhythmic mode
+
+        // Context pointer - must be set via llama_sampler_set_ctx_future_entropy()
+        // before the sampler is used. Without a context, the sampler falls back
+        // to standard probability-proportional sampling.
+        mutable struct llama_context * ctx;
+    };
+
+    static const char * llama_sampler_future_entropy_name(const struct llama_sampler * /*smpl*/) {
+        return "future-entropy";
+    }
+
+    static void llama_sampler_future_entropy_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+        auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
+
+        // Compute effective alpha (possibly rhythmic)
+        const float PI = 3.14159265359f;
+        float alpha = ctx_fe->alpha_init;
+        if (ctx_fe->rhythmic_period > 0) {
+            alpha = std::sin(2.0f * PI * ((float)ctx_fe->step_count + ctx_fe->phase) / (float)ctx_fe->rhythmic_period);
+        }
+        ++ctx_fe->step_count;
+
+        // Clamp alpha to [-1, 1]
+        alpha = std::max(-1.0f, std::min(1.0f, alpha));
+
+        // Compute blend exponents:
+        // a = 1 - max(0, alpha)  -> probability weight
+        // b = 1 - max(0, -alpha) -> entropy weight
+        float a = 1.0f - std::max(0.0f, alpha);
+        float b = 1.0f - std::max(0.0f, -alpha);
+
+        const size_t n_candidates = cur_p->size;
+        if (n_candidates == 0) {
+            return;
+        }
+
+        // If no context is set, pass through unchanged
+        if (!ctx_fe->ctx) {
+            LLAMA_LOG_WARN("%s: no context set, passing through unchanged\n", __func__);
+            return;
+        }
+
+        struct llama_context * ctx = ctx_fe->ctx;
+
+        // Ensure probabilities are populated (softmax if needed)
+        llama_sampler_softmax_impl(cur_p, false);
+
+        // Store original probabilities
+        std::vector<float> probs_orig(n_candidates);
+        for (size_t i = 0; i < n_candidates; ++i) {
+            probs_orig[i] = cur_p->data[i].p;
+        }
+
+        llama_memory_t mem = llama_get_memory(ctx);
+
+        // Get the main sequence ID (use 0 as default)
+        const llama_seq_id seq_id_base = 0;
+
+        // Get current KV cache position for the base sequence
+        const llama_pos pos_min = llama_memory_seq_pos_min(mem, seq_id_base);
+        const llama_pos pos_max = llama_memory_seq_pos_max(mem, seq_id_base);
+        if (pos_min < 0) {
+            LLAMA_LOG_ERROR("%s: no tokens in base sequence\n", __func__);
+            return;
+        }
+
+        const llama_pos pos_next = pos_max + 1;
+
+        // Determine how many fork slots we can use. We need one seq_id per candidate.
+        // seq_id 0 is the base, so fork slots start at 1.
+        const int32_t n_seq_max = (int32_t)llama_n_seq_max(ctx);
+        const int32_t n_fork_slots = std::min((int32_t)n_candidates, n_seq_max - 1);
+        if (n_fork_slots <= 0) {
+            LLAMA_LOG_ERROR("%s: not enough sequence slots (need >= 2, have %d)\n", __func__, n_seq_max);
+            return;
+        }
+
+        // --- Batched decoding: fork all candidates, decode once, read back ---
+
+        // Step 1: Fork base sequence to all fork slots
+        for (int32_t f = 0; f < n_fork_slots; ++f) {
+            llama_memory_seq_cp(mem, seq_id_base, (llama_seq_id)(1 + f), pos_min, pos_max);
+        }
+
+        // Step 2: Build batch with all candidates
+        llama_batch batch = llama_batch_init(n_fork_slots, 0, 1);
+        batch.n_tokens = n_fork_slots;
+        for (int32_t f = 0; f < n_fork_slots; ++f) {
+            batch.token[f] = cur_p->data[f].id;
+            batch.pos[f] = pos_next;
+            batch.n_seq_id[f] = 1;
+            llama_seq_id seq_ids[1] = {(llama_seq_id)(1 + f)};
+            batch.seq_id[f] = seq_ids;
+            batch.logits[f] = 1;
+        }
+
+        // Step 3: Single forward pass for all candidates
+        if (llama_decode(ctx, batch) != 0) {
+            LLAMA_LOG_ERROR("%s: batched decode failed\n", __func__);
+            // Clean up all forks on error
+            for (int32_t f = 0; f < n_fork_slots; ++f) {
+                llama_memory_seq_rm(mem, (llama_seq_id)(1 + f), pos_min, pos_next);
+            }
+            llama_batch_free(batch);
+            return;
+        }
+
+        // Step 4: Read back logits and compute entropy for each candidate
+        const int32_t n_vocab = (int32_t)llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
+        const int32_t n_top = std::min(ctx_fe->n_future_top, n_vocab);
+
+        std::vector<float> entropies(n_candidates, 0.5f);
+
+        // Reusable buffers to avoid per-candidate allocation
+        std::vector<std::pair<float, int32_t>> logit_pairs;
+        logit_pairs.reserve(n_vocab);
+        std::vector<float> probs_top(n_top);
+
+        for (int32_t f = 0; f < n_fork_slots; ++f) {
+            const float * logits = llama_get_logits_ith(ctx, f);
+            if (!logits) {
+                continue;
+            }
+
+            // Collect all logits
+            logit_pairs.clear();
+            for (int32_t j = 0; j < n_vocab; ++j) {
+                logit_pairs.emplace_back(logits[j], j);
+            }
+
+            // Partial sort to get top-n
+            std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + n_top, logit_pairs.end(),
+                std::greater<std::pair<float, int32_t>>());
+
+            // Compute softmax of the top-n logits
+            float max_logit = logit_pairs[0].first;
+            float sum_exp = 0.0f;
+            for (int32_t j = 0; j < n_top; ++j) {
+                probs_top[j] = std::exp(logit_pairs[j].first - max_logit);
+                sum_exp += probs_top[j];
+            }
+            for (int32_t j = 0; j < n_top; ++j) {
+                probs_top[j] /= sum_exp;
+            }
+
+            // Compute normalized Shannon entropy
+            float entropy = 0.0f;
+            float log_n = std::log((float)n_top);
+            for (int32_t j = 0; j < n_top; ++j) {
+                if (probs_top[j] > 0.0f) {
+                    entropy -= probs_top[j] * std::log(probs_top[j]);
+                }
+            }
+            if (log_n > 0.0f) {
+                entropy /= log_n;
+            }
+            entropy = std::max(0.0f, std::min(1.0f, entropy));
+
+            entropies[f] = entropy;
+        }
+
+        // Step 5: Clean up all forked sequences
+        for (int32_t f = 0; f < n_fork_slots; ++f) {
+            llama_memory_seq_rm(mem, (llama_seq_id)(1 + f), pos_min, pos_next);
+        }
+
+        llama_batch_free(batch);
+
+        // Compute blended scores: s(w) = p(w|c)^a * H_hat(w)^b
+        std::vector<float> scores(n_candidates);
+        for (size_t i = 0; i < n_candidates; ++i) {
+            float p = probs_orig[i];
+            float h = entropies[i];
+
+            // Avoid log(0) issues
+            if (p <= 0.0f) p = 1e-10f;
+            if (h <= 0.0f && b > 0.0f) h = 1e-10f;
+
+            scores[i] = std::pow(p, a) * std::pow(h, b);
+        }
+
+        // Renormalize scores into a probability distribution
+        float sum_scores = 0.0f;
+        for (size_t i = 0; i < n_candidates; ++i) {
+            sum_scores += scores[i];
+        }
+
+        for (size_t i = 0; i < n_candidates; ++i) {
+            cur_p->data[i].p = scores[i] / sum_scores;
+            cur_p->data[i].logit = std::log(scores[i] / sum_scores);
+        }
+        cur_p->sorted = false;
+    }
+
+    static void llama_sampler_future_entropy_reset(struct llama_sampler * smpl) {
+        auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
+        ctx_fe->step_count = 0;
+    }
+
+    static struct llama_sampler * llama_sampler_future_entropy_clone(const struct llama_sampler * smpl) {
+        const auto * ctx_fe = (const llama_sampler_future_entropy *) smpl->ctx;
+        auto * result = llama_sampler_init_future_entropy(
+            ctx_fe->n_top_candidates,
+            ctx_fe->n_future_top,
+            ctx_fe->alpha_init,
+            ctx_fe->rhythmic_period,
+            ctx_fe->phase
+        );
+        auto * result_ctx = (llama_sampler_future_entropy *) result->ctx;
+        result_ctx->step_count = ctx_fe->step_count;
+        result_ctx->ctx = ctx_fe->ctx;
+        return result;
+    }
+
+    static void llama_sampler_future_entropy_free(struct llama_sampler * smpl) {
+        delete (llama_sampler_future_entropy *) smpl->ctx;
+    }
+
+    static struct llama_sampler_i llama_sampler_future_entropy_i = {
+        /* .name              = */ llama_sampler_future_entropy_name,
+        /* .accept            = */ nullptr,
+        /* .apply             = */ llama_sampler_future_entropy_apply,
+        /* .reset             = */ llama_sampler_future_entropy_reset,
+        /* .clone             = */ llama_sampler_future_entropy_clone,
+        /* .free              = */ llama_sampler_future_entropy_free,
+        /* .backend_init      = */ nullptr,
+        /* .backend_accept    = */ nullptr,
+        /* .backend_apply     = */ nullptr,
+        /* .backend_set_input = */ nullptr,
+    };
+
+    struct llama_sampler * llama_sampler_init_future_entropy(
+        int32_t   n_top_candidates,
+        int32_t   n_future_top,
+        float     alpha,
+        int32_t   rhythmic_period,
+        float     phase
+    ) {
+        if (n_top_candidates <= 0 || n_future_top <= 1) {
+            return llama_sampler_init_empty("?future-entropy");
+        }
+
+        return llama_sampler_init(
+            /* .iface = */ &llama_sampler_future_entropy_i,
+            /* .ctx   = */ new llama_sampler_future_entropy {
+                /* .n_top_candidates = */ n_top_candidates,
+                /* .n_future_top     = */ n_future_top,
+                /* .alpha_init       = */ std::max(-1.0f, std::min(1.0f, alpha)),
+                /* .rhythmic_period  = */ rhythmic_period,
+                /* .phase            = */ phase,
+                /* .step_count       = */ 0,
+                /* .ctx              = */ nullptr,
+            }
+        );
+    }
+
+    void llama_sampler_set_ctx_future_entropy(struct llama_sampler * smpl, struct llama_context * ctx) {
+        if (!smpl || smpl->iface != &llama_sampler_future_entropy_i) {
+            return;
+        }
+        auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
+        ctx_fe->ctx = ctx;
+    }
+
+    void llama_sampler_get_state_future_entropy(struct llama_sampler * smpl, float * alpha, int64_t * step_count) {
+        if (!smpl || smpl->iface != &llama_sampler_future_entropy_i) {
+            if (alpha) *alpha = 0.0f;
+            if (step_count) *step_count = 0;
+            return;
+        }
+        auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
+        if (step_count) *step_count = ctx_fe->step_count;
+        if (alpha) {
+            const float PI = 3.14159265359f;
+            float a = ctx_fe->alpha_init;
+            if (ctx_fe->rhythmic_period > 0) {
+                a = std::sin(2.0f * PI * ((float)ctx_fe->step_count + ctx_fe->phase) / (float)ctx_fe->rhythmic_period);
+                a = std::max(-1.0f, std::min(1.0f, a));
+            }
+            *alpha = a;
+        }
+    }
+
+    // utils
+
+    uint32_t llama_sampler_get_seed(const struct llama_sampler * smpl) {
     if (smpl->iface == &llama_sampler_dist_i) {
         return ((const llama_sampler_dist *) smpl->ctx)->seed_cur;
     }

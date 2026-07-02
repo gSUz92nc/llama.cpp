@@ -345,6 +345,15 @@ struct common_sampler * common_sampler_init(const struct llama_model * model, st
                 case COMMON_SAMPLER_TYPE_XTC:
                     samplers.push_back(llama_sampler_init_xtc(params.xtc_probability, params.xtc_threshold, params.min_keep, params.seed));
                     break;
+                case COMMON_SAMPLER_TYPE_FUTURE_ENTROPY:
+                    samplers.push_back(llama_sampler_init_future_entropy(
+                        params.fe_top_candidates,
+                        params.fe_future_top,
+                        params.fe_alpha,
+                        params.fe_rhythmic_period,
+                        0.0f
+                    ));
+                    break;
                 case COMMON_SAMPLER_TYPE_TYPICAL_P:
                     samplers.push_back(llama_sampler_init_typical(params.typ_p, params.min_keep));
                     break;
@@ -750,7 +759,8 @@ char common_sampler_type_to_chr(enum common_sampler_type cnstr) {
         case COMMON_SAMPLER_TYPE_XTC:         return 'x';
         case COMMON_SAMPLER_TYPE_INFILL:      return 'i';
         case COMMON_SAMPLER_TYPE_PENALTIES:   return 'e';
-        case COMMON_SAMPLER_TYPE_ADAPTIVE_P:  return 'a';
+        case COMMON_SAMPLER_TYPE_ADAPTIVE_P:   return 'a';
+        case COMMON_SAMPLER_TYPE_FUTURE_ENTROPY: return 'f';
         default : return '?';
     }
 }
@@ -767,7 +777,8 @@ std::string common_sampler_type_to_str(enum common_sampler_type cnstr) {
         case COMMON_SAMPLER_TYPE_XTC:         return "xtc";
         case COMMON_SAMPLER_TYPE_INFILL:      return "infill";
         case COMMON_SAMPLER_TYPE_PENALTIES:   return "penalties";
-        case COMMON_SAMPLER_TYPE_ADAPTIVE_P:  return "adaptive_p";
+        case COMMON_SAMPLER_TYPE_ADAPTIVE_P:   return "adaptive_p";
+        case COMMON_SAMPLER_TYPE_FUTURE_ENTROPY: return "future_entropy";
         default : return "";
     }
 }
@@ -786,8 +797,9 @@ std::vector<common_sampler_type> common_sampler_types_from_names(const std::vect
             { "temperature", COMMON_SAMPLER_TYPE_TEMPERATURE },
             { "xtc",         COMMON_SAMPLER_TYPE_XTC         },
             { "infill",      COMMON_SAMPLER_TYPE_INFILL      },
-            { "penalties",   COMMON_SAMPLER_TYPE_PENALTIES   },
-            { "adaptive_p",  COMMON_SAMPLER_TYPE_ADAPTIVE_P  }
+            { "penalties",      COMMON_SAMPLER_TYPE_PENALTIES      },
+            { "adaptive_p",     COMMON_SAMPLER_TYPE_ADAPTIVE_P     },
+            { "future_entropy", COMMON_SAMPLER_TYPE_FUTURE_ENTROPY }
         };
         std::unordered_map<std::string, common_sampler_type> alias_name_map;
         for (const auto & entry : canonical_name_map) {
@@ -846,7 +858,8 @@ std::vector<common_sampler_type> common_sampler_types_from_chars(const std::stri
         { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_XTC),         COMMON_SAMPLER_TYPE_XTC },
         { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_INFILL),      COMMON_SAMPLER_TYPE_INFILL },
         { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_PENALTIES),   COMMON_SAMPLER_TYPE_PENALTIES },
-        { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_ADAPTIVE_P),  COMMON_SAMPLER_TYPE_ADAPTIVE_P },
+        { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_ADAPTIVE_P),   COMMON_SAMPLER_TYPE_ADAPTIVE_P   },
+        { common_sampler_type_to_chr(COMMON_SAMPLER_TYPE_FUTURE_ENTROPY), COMMON_SAMPLER_TYPE_FUTURE_ENTROPY },
     };
 
     std::vector<common_sampler_type> samplers;

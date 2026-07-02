@@ -1443,11 +1443,59 @@ extern "C" {
     /// ref: https://github.com/ggml-org/llama.cpp/pull/17927
     ///
     LLAMA_API struct llama_sampler * llama_sampler_init_adaptive_p(
-                               float   target,
-                               float   decay,
-                            uint32_t   seed);
+                                   float   target,
+                                   float   decay,
+                                uint32_t   seed);
 
-    LLAMA_API struct llama_sampler * llama_sampler_init_logit_bias(
+        /// @details Future-entropy sampler: for each candidate token, look ahead one
+        /// step to compute the entropy of the next-token distribution, then blend
+        /// this entropy score with the token's own probability using an alpha
+        /// crossfader.
+        ///
+        /// Alpha crossfader: [-1, 1], where:
+        ///   alpha = -1 -> standard probability-proportional sampling
+        ///   alpha =  0 -> geometric mean of probability and entropy
+        ///   alpha =  1 -> pure entropy-driven sampling
+        ///
+        /// Rhythmic mode: when rhythmic_period > 0, alpha oscillates as
+        ///   alpha(t) = sin(2*pi*(t + phase)/period)
+        ///
+        /// This sampler requires a llama_context to perform forward passes.
+        /// Set it using llama_sampler_set_ctx_future_entropy() before use.
+        ///
+        /// Must be placed after top-k/top-p in the chain and before temperature.
+        /// Ensure n_seq_max >= 2 in llama_context_params.
+        ///
+        /// @param n_top_candidates  number of candidate tokens to evaluate (e.g. 50)
+        /// @param n_future_top      top-n tokens for entropy computation (e.g. 40)
+        /// @param alpha             crossfader [-1, 1]
+        /// @param rhythmic_period   period in tokens (0 = off)
+        /// @param phase             phase offset for rhythmic mode
+        ///
+        LLAMA_API struct llama_sampler * llama_sampler_init_future_entropy(
+                                   int32_t   n_top_candidates,
+                                   int32_t   n_future_top,
+                                   float     alpha,
+                                   int32_t   rhythmic_period,
+                                   float     phase);
+
+        /// Set the llama_context for a future-entropy sampler. Must be called
+        /// before the sampler is used, as forward passes are required.
+        LLAMA_API void llama_sampler_set_ctx_future_entropy(
+                struct llama_sampler * smpl,
+                struct llama_context * ctx);
+
+        /// Get the current alpha value and step count from a future-entropy sampler.
+        /// Useful for verifying rhythmic mode behavior.
+        /// @param smpl        the sampler
+        /// @param alpha       output: current effective alpha (may be rhythmic)
+        /// @param step_count  output: current generation step counter
+        LLAMA_API void llama_sampler_get_state_future_entropy(
+                struct llama_sampler * smpl,
+                float * alpha,
+                int64_t * step_count);
+
+        LLAMA_API struct llama_sampler * llama_sampler_init_logit_bias(
                              int32_t   n_vocab,
                              int32_t   n_logit_bias,
               const llama_logit_bias * logit_bias);

@@ -1296,6 +1296,22 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     }
 
     pimpl->context.reset(lctx);
+
+    // Set context on any future-entropy samplers
+    for (int i = 0; i < (int) pimpl->samplers.size(); ++i) {
+        auto * chain = common_sampler_get(pimpl->samplers[i].get());
+        if (!chain) continue;
+        int n = llama_sampler_chain_n(chain);
+        for (int j = 0; j < n; ++j) {
+            auto * smpl = llama_sampler_chain_get(chain, j);
+            if (smpl && smpl->iface) {
+                // Check if this is a future-entropy sampler by name
+                if (smpl->iface->name && std::string(smpl->iface->name(smpl)) == "future-entropy") {
+                    llama_sampler_set_ctx_future_entropy(smpl, lctx);
+                }
+            }
+        }
+    }
 }
 
 llama_model * common_init_result::model() {

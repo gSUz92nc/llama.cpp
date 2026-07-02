@@ -1819,6 +1819,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_sampling());
     add_opt(common_arg(
+        {"--fe-alpha"}, "N",
+        string_format("future-entropy alpha crossfader (default: %.2f, -1 to 1; enables future-entropy sampler)", (double)params.sampling.fe_alpha),
+        [](common_params & params, const std::string & value) {
+            params.sampling.fe_alpha = std::stof(value);
+        }
+    ).set_sampling());
+    add_opt(common_arg(
+        {"--fe-top-candidates"}, "N",
+        string_format("future-entropy top candidates to evaluate (default: %d)", params.sampling.fe_top_candidates),
+        [](common_params & params, int value) {
+            params.sampling.fe_top_candidates = value;
+        }
+    ).set_sampling());
+    add_opt(common_arg(
+        {"--fe-future-top"}, "N",
+        string_format("future-entropy top-n for entropy computation (default: %d)", params.sampling.fe_future_top),
+        [](common_params & params, int value) {
+            params.sampling.fe_future_top = value;
+        }
+    ).set_sampling());
+    add_opt(common_arg(
+        {"--fe-rhythmic-period"}, "N",
+        string_format("future-entropy rhythmic mode period in tokens (default: %d, 0 = off)", params.sampling.fe_rhythmic_period),
+        [](common_params & params, int value) {
+            params.sampling.fe_rhythmic_period = value;
+        }
+    ).set_sampling());
+    add_opt(common_arg(
         {"--typical", "--typical-p"}, "N",
         string_format("locally typical sampling, parameter p (default: %.2f, 1.0 = disabled)", (double)params.sampling.typ_p),
         [](common_params & params, const std::string & value) {
