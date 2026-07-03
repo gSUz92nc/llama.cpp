@@ -3849,6 +3849,9 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
         // before the sampler is used. Without a context, the sampler falls back
         // to standard probability-proportional sampling.
         mutable struct llama_context * ctx;
+
+        // Base sequence ID for KV cache look-ahead (default: 0)
+        mutable llama_seq_id seq_id;
     };
 
     static const char * llama_sampler_future_entropy_name(const struct llama_sampler * /*smpl*/) {
@@ -3899,8 +3902,8 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
 
         llama_memory_t mem = llama_get_memory(ctx);
 
-        // Get the main sequence ID (use 0 as default)
-        const llama_seq_id seq_id_base = 0;
+        // Base sequence ID for look-ahead (default: 0, settable via llama_sampler_set_seq_id_future_entropy)
+        const llama_seq_id seq_id_base = ctx_fe->seq_id;
 
         // Get current KV cache position for the base sequence
         const llama_pos pos_min = llama_memory_seq_pos_min(mem, seq_id_base);
@@ -4043,6 +4046,7 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
         auto * result_ctx = (llama_sampler_future_entropy *) result->ctx;
         result_ctx->step_count = ctx_fe->step_count;
         result_ctx->ctx = ctx_fe->ctx;
+        result_ctx->seq_id = ctx_fe->seq_id;
         return result;
     }
 
@@ -4084,6 +4088,7 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
                 /* .phase            = */ phase,
                 /* .step_count       = */ 0,
                 /* .ctx              = */ nullptr,
+                /* .seq_id           = */ 0,
             }
         );
     }
@@ -4094,6 +4099,14 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
         }
         auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
         ctx_fe->ctx = ctx;
+    }
+
+    void llama_sampler_set_seq_id_future_entropy(struct llama_sampler * smpl, llama_seq_id seq_id) {
+        if (!smpl || smpl->iface != &llama_sampler_future_entropy_i) {
+            return;
+        }
+        auto * ctx_fe = (llama_sampler_future_entropy *) smpl->ctx;
+        ctx_fe->seq_id = seq_id;
     }
 
     void llama_sampler_get_state_future_entropy(struct llama_sampler * smpl, float * alpha, int64_t * step_count) {

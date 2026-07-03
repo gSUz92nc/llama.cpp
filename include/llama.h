@@ -1491,6 +1491,13 @@ extern "C" {
                 struct llama_sampler * smpl,
                 struct llama_context * ctx);
 
+        /// Set the base sequence ID for a future-entropy sampler. Used by the
+        /// server to specify which slot's KV cache to fork from during look-ahead.
+        /// Defaults to 0 if not set.
+        LLAMA_API void llama_sampler_set_seq_id_future_entropy(
+                struct llama_sampler * smpl,
+                llama_seq_id seq_id);
+
         /// Get the current alpha value and step count from a future-entropy sampler.
         /// Useful for verifying rhythmic mode behavior.
         /// @param smpl        the sampler
