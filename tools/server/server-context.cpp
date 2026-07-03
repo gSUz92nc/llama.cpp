@@ -1835,7 +1835,20 @@ private:
 
             // TODO: tmp until backend sampling is fully implemented
             if (backend_sampling) {
-                llama_set_sampler(ctx_tgt, slot.id, common_sampler_get(slot.smpl.get()));
+                auto * chain = common_sampler_get(slot.smpl.get());
+                llama_set_sampler(ctx_tgt, slot.id, chain);
+
+                // Set context on any future-entropy samplers
+                if (chain) {
+                    int n = llama_sampler_chain_n(chain);
+                    for (int j = 0; j < n; ++j) {
+                        auto * smpl = llama_sampler_chain_get(chain, j);
+                        if (smpl && smpl->iface && smpl->iface->name &&
+                            std::string(smpl->iface->name(smpl)) == "future-entropy") {
+                            llama_sampler_set_ctx_future_entropy(smpl, ctx_tgt);
+                        }
+                    }
+                }
             } else {
                 llama_set_sampler(ctx_tgt, slot.id, nullptr);
             }

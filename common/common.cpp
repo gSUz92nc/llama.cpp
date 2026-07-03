@@ -1198,6 +1198,12 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
+    // Future-entropy sampler needs at least 2 sequence slots (base + working)
+    if (std::find(params.sampling.samplers.begin(), params.sampling.samplers.end(),
+                  COMMON_SAMPLER_TYPE_FUTURE_ENTROPY) != params.sampling.samplers.end()) {
+        cparams.n_seq_max = std::max(cparams.n_seq_max, (uint32_t)2);
+    }
+
     if (params.fit_params) {
         COM_TRC("%s", "fitting params to device memory ...\n");
         COM_TRC("%s", "(for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n");

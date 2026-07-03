@@ -38,7 +38,7 @@ This causes the sampler to alternate between probability-driven and entropy-driv
 ### CLI Flags
 
 ```
---samplers "top_k,top_p,future_entropy,temperature"
+--samplers "top_k;top_p;future_entropy;temperature"
 --fe-alpha 0.0              # crossfader [-1, 1]; default 0
 --fe-top-candidates 50      # candidates to evaluate; default 50
 --fe-future-top 40          # top-n for entropy computation; default 40
@@ -47,9 +47,9 @@ This causes the sampler to alternate between probability-driven and entropy-driv
 
 ### Requirements
 
-- `--parallel 2` or higher (needs at least 2 sequence slots: one base + one fork)
 - Place `future_entropy` AFTER `top_k`/`top_p` in the sampler chain (to limit candidate set)
 - Place `future_entropy` BEFORE `temperature` (outputs modified logits for downstream scaling)
+- The sampler automatically ensures at least 2 sequence slots are available when added to the chain
 
 ### API
 
@@ -81,14 +81,14 @@ This sampler requires one forward pass per candidate token per generation step. 
 
 ### Benchmark Notes
 
-To benchmark with and without future-entropy:
+Note: `llama-bench` does not support custom sampler chains via `--samplers`. Use `llama-completion` for testing:
 
 ```sh
 # Baseline (no future-entropy)
-./llama-bench -m model.gguf -n 256 -p "Hello" --samplers "top_k,top_p,temperature"
+./llama-completion -m model.gguf -n 256 -p "Hello" --samplers "top_k;top_p;temperature" --no-cnv
 
 # With future-entropy (3 candidates for reasonable speed)
-./llama-bench -m model.gguf -n 256 -p "Hello" --samplers "top_k,top_p,future_entropy,temperature" --fe-top-candidates 3 --parallel 2
+./llama-completion -m model.gguf -n 256 -p "Hello" --samplers "top_k;top_p;future_entropy;temperature" --fe-top-candidates 3 --no-cnv
 ```
 
 Expected results with a 2B model on CPU:
@@ -96,7 +96,7 @@ Expected results with a 2B model on CPU:
 - With FE (3 candidates): ~15 tok/s (approximately 3x slowdown)
 - With FE (50 candidates): ~1 tok/s (approximately 50x slowdown)
 
-The batched decoding implementation reduces overhead by processing all candidates in a single `llama_decode()` call using KV cache forks, but the fundamental cost of N forward passes remains.
+The implementation processes candidates sequentially using a single working slot with KV cache forks, so the fundamental cost of N forward passes remains.
 
 ### Recommendations
 
@@ -107,7 +107,7 @@ The batched decoding implementation reduces overhead by processing all candidate
 
 ## Implementation Notes
 
-- Batched decoding: all candidates are forked to separate sequence slots and decoded in a single `llama_decode()` call
+- Sequential processing: candidates are evaluated one at a time using a single working slot with KV cache forks
 - KV cache is forked from the base sequence using `llama_memory_seq_cp()`
 - Entropy is computed from the top-n_future_top logits after softmax
 - Without a context set, the sampler passes probabilities through unchanged

@@ -3912,46 +3912,16 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
 
         const llama_pos pos_next = pos_max + 1;
 
-        // Determine how many fork slots we can use. We need one seq_id per candidate.
-        // seq_id 0 is the base, so fork slots start at 1.
+        // Need a working sequence slot for look-ahead decoding.
+        // seq_cp forks the base sequence to the working slot so we can decode
+        // candidates without modifying the base KV cache.
         const int32_t n_seq_max = (int32_t)llama_n_seq_max(ctx);
-        const int32_t n_fork_slots = std::min((int32_t)n_candidates, n_seq_max - 1);
-        if (n_fork_slots <= 0) {
+        if (n_seq_max < 2) {
             LLAMA_LOG_ERROR("%s: not enough sequence slots (need >= 2, have %d)\n", __func__, n_seq_max);
             return;
         }
 
-        // --- Batched decoding: fork all candidates, decode once, read back ---
-
-        // Step 1: Fork base sequence to all fork slots
-        for (int32_t f = 0; f < n_fork_slots; ++f) {
-            llama_memory_seq_cp(mem, seq_id_base, (llama_seq_id)(1 + f), pos_min, pos_max);
-        }
-
-        // Step 2: Build batch with all candidates
-        llama_batch batch = llama_batch_init(n_fork_slots, 0, 1);
-        batch.n_tokens = n_fork_slots;
-        for (int32_t f = 0; f < n_fork_slots; ++f) {
-            batch.token[f] = cur_p->data[f].id;
-            batch.pos[f] = pos_next;
-            batch.n_seq_id[f] = 1;
-            llama_seq_id seq_ids[1] = {(llama_seq_id)(1 + f)};
-            batch.seq_id[f] = seq_ids;
-            batch.logits[f] = 1;
-        }
-
-        // Step 3: Single forward pass for all candidates
-        if (llama_decode(ctx, batch) != 0) {
-            LLAMA_LOG_ERROR("%s: batched decode failed\n", __func__);
-            // Clean up all forks on error
-            for (int32_t f = 0; f < n_fork_slots; ++f) {
-                llama_memory_seq_rm(mem, (llama_seq_id)(1 + f), pos_min, pos_next);
-            }
-            llama_batch_free(batch);
-            return;
-        }
-
-        // Step 4: Read back logits and compute entropy for each candidate
+        const llama_seq_id seq_id_work = 1;
         const int32_t n_vocab = (int32_t)llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
         const int32_t n_top = std::min(ctx_fe->n_future_top, n_vocab);
 
@@ -3962,54 +3932,72 @@ struct llama_sampler * llama_sampler_init_infill(const struct llama_vocab * voca
         logit_pairs.reserve(n_vocab);
         std::vector<float> probs_top(n_top);
 
-        for (int32_t f = 0; f < n_fork_slots; ++f) {
-            const float * logits = llama_get_logits_ith(ctx, f);
-            if (!logits) {
+        // Build single-token batch (reused across candidates)
+        llama_batch batch = llama_batch_init(1, 0, 1);
+        batch.n_tokens = 1;
+        batch.pos[0] = pos_next;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = seq_id_work;
+        batch.logits[0] = 1;
+
+        // Process each candidate: fork base to working slot, decode, read logits, clear
+        // For cross-stream KV caches (e.g., SWA models), seq_cp requires a full buffer
+        // copy. We use the full context range to satisfy this requirement.
+        const llama_pos pos_ctx_end = llama_n_ctx(ctx) - 1;
+        for (size_t i = 0; i < n_candidates; ++i) {
+            // Fork base sequence to working slot (full range for cross-stream compatibility)
+            llama_memory_seq_cp(mem, seq_id_base, seq_id_work, 0, pos_ctx_end);
+
+            batch.token[0] = cur_p->data[i].id;
+
+            if (llama_decode(ctx, batch) != 0) {
+                llama_memory_seq_rm(mem, seq_id_work, 0, pos_ctx_end);
                 continue;
             }
 
-            // Collect all logits
-            logit_pairs.clear();
-            for (int32_t j = 0; j < n_vocab; ++j) {
-                logit_pairs.emplace_back(logits[j], j);
-            }
-
-            // Partial sort to get top-n
-            std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + n_top, logit_pairs.end(),
-                std::greater<std::pair<float, int32_t>>());
-
-            // Compute softmax of the top-n logits
-            float max_logit = logit_pairs[0].first;
-            float sum_exp = 0.0f;
-            for (int32_t j = 0; j < n_top; ++j) {
-                probs_top[j] = std::exp(logit_pairs[j].first - max_logit);
-                sum_exp += probs_top[j];
-            }
-            for (int32_t j = 0; j < n_top; ++j) {
-                probs_top[j] /= sum_exp;
-            }
-
-            // Compute normalized Shannon entropy
-            float entropy = 0.0f;
-            float log_n = std::log((float)n_top);
-            for (int32_t j = 0; j < n_top; ++j) {
-                if (probs_top[j] > 0.0f) {
-                    entropy -= probs_top[j] * std::log(probs_top[j]);
+            // Read logits for this candidate's successor distribution
+            const float * logits = llama_get_logits_ith(ctx, 0);
+            if (logits) {
+                // Collect all logits
+                logit_pairs.clear();
+                for (int32_t j = 0; j < n_vocab; ++j) {
+                    logit_pairs.emplace_back(logits[j], j);
                 }
+
+                // Partial sort to get top-n
+                std::partial_sort(logit_pairs.begin(), logit_pairs.begin() + n_top, logit_pairs.end(),
+                    std::greater<std::pair<float, int32_t>>());
+
+                // Compute softmax of the top-n logits
+                float max_logit = logit_pairs[0].first;
+                float sum_exp = 0.0f;
+                for (int32_t j = 0; j < n_top; ++j) {
+                    probs_top[j] = std::exp(logit_pairs[j].first - max_logit);
+                    sum_exp += probs_top[j];
+                }
+                for (int32_t j = 0; j < n_top; ++j) {
+                    probs_top[j] /= sum_exp;
+                }
+
+                // Compute normalized Shannon entropy
+                float entropy = 0.0f;
+                float log_n = std::log((float)n_top);
+                for (int32_t j = 0; j < n_top; ++j) {
+                    if (probs_top[j] > 0.0f) {
+                        entropy -= probs_top[j] * std::log(probs_top[j]);
+                    }
+                }
+                if (log_n > 0.0f) {
+                    entropy /= log_n;
+                }
+                entropy = std::max(0.0f, std::min(1.0f, entropy));
+
+                entropies[i] = entropy;
             }
-            if (log_n > 0.0f) {
-                entropy /= log_n;
-            }
-            entropy = std::max(0.0f, std::min(1.0f, entropy));
 
-            entropies[f] = entropy;
+            // Clear working slot for next iteration
+            llama_memory_seq_rm(mem, seq_id_work, 0, pos_ctx_end);
         }
-
-        // Step 5: Clean up all forked sequences
-        for (int32_t f = 0; f < n_fork_slots; ++f) {
-            llama_memory_seq_rm(mem, (llama_seq_id)(1 + f), pos_min, pos_next);
-        }
-
         llama_batch_free(batch);
 
         // Compute blended scores: s(w) = p(w|c)^a * H_hat(w)^b
